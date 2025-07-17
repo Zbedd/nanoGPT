@@ -7,10 +7,11 @@ from torch.nn import functional as F
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 batch_size = 32 # ind sequences processed in parallel
 block_size = 8 # max context length for predictions
-max_iters = 3000
-eval_interval = 300
-learning_rate = 1e-2
+max_iters = 5000
+eval_interval = 500
+learning_rate = 1e-3
 eval_iters = 200
+n_embd = 32 # embedding dimension
 # --------------------------------
 
 torch.manual_seed(1337)
@@ -46,10 +47,11 @@ def get_batch(split):
     x, y = x.to('cuda'), y.to('cuda')
     return x, y
 
-@torch.no_grad()
+# averages out the loss over multiple batches to reduce noise
+@torch.no_grad() # we don't need gradients for this function
 def estimate_loss():
     out = {}
-    model.eval()
+    model.eval() # sets the model to eval mode
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
@@ -57,8 +59,32 @@ def estimate_loss():
             logits, loss = model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
-    model.train()
+    model.train() # sets the model back to train mode
     return out
+
+'''Attention'''
+class Head(nn.Module):
+    # one head of self-attention
+    
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+    
+    def forward(self, x):
+        B, T, C = x.shape
+        k = self.key(x) # (B, T, C)
+        q = self.query(x)  # (B, T, C)
+        # compute attention scores ("affinities")
+        wei = q @ k.transpose(-2, -1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
+        wei = F.softmax(wei, dim=-1) # (B, T, T)
+        # perform the weighted aggregation of the values
+        v = self.value(x) # (B, T, C)
+        out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
+
 
 '''Bigram Language Model'''
    
@@ -66,11 +92,18 @@ class BigramLanguageModel(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         # each token directly reads off the logits for the next token from a lookup table
-        self.token_embedding_table = nn.Embedding(vocab_size, vocab_size) # vocab_size x vocab_size
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embd) # vocab_size x vocab_size
+        self.position_embedding_table = nn.Embedding(block_size, n_embd) # block_size x vocab_size
+        self.lm_head = nn.Linear(n_embd, vocab_size)
     
     def forward(self, idx, targets=None):
+        B, T = idx.shape
+        
         # idx and targets are both (B,T) tensor of integers
-        logits = self.token_embedding_table(idx) # (B,T,C) where C is vocab_size
+        tok_emb = self.token_embedding_table(idx) # (B,T,C) where C is an embed C | represent each token with a vector
+        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C) | represent each position with a vector
+        x = tok_emb + pos_emb # (B,T,C)
+        logits = self.lm_head(x) # (B,T,vocab_size) 
         
         if targets is None:
             loss = None
@@ -88,8 +121,10 @@ class BigramLanguageModel(nn.Module):
     def generate(self, idx, max_new_tokens):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
+            # crop the context to the last block_size tokens
+            idx_cond = idx[:, -block_size:] # (B, T) where T <= block_size
             # get the predictions
-            logits, loss = self(idx)
+            logits, loss = self(idx_cond)
             # focus only on the last time step
             logits = logits[:, -1, :] # becomes (B, C)
             # apply softmax to get probabilities
@@ -117,19 +152,22 @@ print(decode(m.generate(idx, max_new_tokens=100)[0].tolist())) # generate 100 ne
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(m.parameters(), lr=1e-3)
 
-batch_size = 32
-for steps in range(10000):
+for iter in range(max_iters):
+    # every once in a while evaluate the loss on train and val sets
+    if iter % eval_interval == 0 or iter == max_iters - 1:
+        losses = estimate_loss() # returns a dictionary with train and val losses
+        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}") 
+    
     # sample a batch of data
-    xb, yb = get_batch('train')
+    xb, yb = get_batch('train') # batch_size x block_size
 
     # evaluate the loss
-    logits, loss = m(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+    logits, loss = m(xb, yb) # logits are (B,T,C), targets are (B,T)
+    optimizer.zero_grad(set_to_none=True) # reset the gradients
+    loss.backward() # backpropagate to get the gradients
+    optimizer.step() # update the parameters using the gradients
     
-print(loss.item())
-    
-idx = torch.zeros((1, 1), dtype=torch.long, device=device) # starting context (just a single newline)
-print(decode(m.generate(idx, max_new_tokens=100)[0].tolist())) # generate 100 new characters from the model
-# now the output should be somewhat Shakespeare-like
+# generate from the model
+print("Final generation after training:")
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
+print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
