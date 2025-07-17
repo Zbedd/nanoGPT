@@ -68,7 +68,10 @@ xb, yb = get_batch('train')
 #         context = xb[b, :t+1].tolist()
 #         target = yb[b, t].item()
 #         print(f"when input is {context} the target: {target} ('{itos[target]}')")
-        
+
+
+'''Bigram Language Model'''
+   
 class BigramLanguageModel(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
@@ -112,3 +115,27 @@ out = m(xb, yb)
 
 idx = torch.zeros((1, 1), dtype=torch.long, device=device) # starting context (just a single newline)
 print(decode(m.generate(idx, max_new_tokens=100)[0].tolist())) # generate 100 new characters from the model
+# output will be garbage at this point since the model is untrained
+
+
+'''Training the model'''
+
+# create a PyTorch optimizer
+optimizer = torch.optim.AdamW(m.parameters(), lr=1e-3)
+
+batch_size = 32
+for steps in range(10000):
+    # sample a batch of data
+    xb, yb = get_batch('train')
+
+    # evaluate the loss
+    logits, loss = m(xb, yb)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+    
+print(loss.item())
+    
+idx = torch.zeros((1, 1), dtype=torch.long, device=device) # starting context (just a single newline)
+print(decode(m.generate(idx, max_new_tokens=100)[0].tolist())) # generate 100 new characters from the model
+# now the output should be somewhat Shakespeare-like
