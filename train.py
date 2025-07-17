@@ -3,7 +3,18 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+# hyperparametrs
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+batch_size = 32 # ind sequences processed in parallel
+block_size = 8 # max context length for predictions
+max_iters = 3000
+eval_interval = 300
+learning_rate = 1e-2
+eval_iters = 200
+# --------------------------------
+
+torch.manual_seed(1337)
+
 
 #Download the tiny shakespeare dataset
 url = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
@@ -14,36 +25,17 @@ with open("input.txt", "r") as f:
 #Identify unique characters in the dataset
 chars = sorted(set(text))
 vocab_size = len(chars)
-# print(''.join(chars))
-# print(f"Vocab size: {vocab_size}")
-
 #Tokenizer 
 stoi = { ch:i for i,ch in enumerate(chars) } # string to index
 itos = { i:ch for i,ch in enumerate(chars) } # index to string
 encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
 decode = lambda l: ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
 
-#Encoding the text dataset and store in torch.Tensor
-data = torch.tensor(encode(text), dtype=torch.long)
-
 #Train and val split
+data = torch.tensor(encode(text), dtype=torch.long)
 n = int(0.9*len(data)) # first 90% will be train, rest val
 train_data = data[:n].to(device)
 val_data = data[n:].to(device)
-
-# #Demonstrating the purpose of block_size
-# block_size = 8 # context length: how many chars to consider for predictions
-# train_data[:block_size+1]
-# x = train_data[:block_size] # input to code
-# y = train_data[1:block_size+1] # target to predict
-# for t in range(block_size):
-#     context = x[:t+1] # the context we have so far
-#     target = y[t] # the next character we want to predict
-#     print(f"when input is {context.tolist()} the target: {target}")
-
-torch.manual_seed(1337)
-batch_size = 4 # how many independent sequences will we process in parallel?
-block_size = 8 # what is the maximum context length for predictions?
 
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
@@ -54,21 +46,19 @@ def get_batch(split):
     x, y = x.to('cuda'), y.to('cuda')
     return x, y
 
-xb, yb = get_batch('train')
-
-# print('inputs: ')
-# print(xb.shape)
-# print(xb)
-# print('targets:')
-# print(yb.shape)
-# print(yb)
-# print('----')
-# for b in range(batch_size): # batch dimension
-#     for t in range(block_size): # time dimension
-#         context = xb[b, :t+1].tolist()
-#         target = yb[b, t].item()
-#         print(f"when input is {context} the target: {target} ('{itos[target]}')")
-
+@torch.no_grad()
+def estimate_loss():
+    out = {}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            X, Y = get_batch(split)
+            logits, loss = model(X, Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
 
 '''Bigram Language Model'''
    
@@ -110,7 +100,11 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
     
-m = BigramLanguageModel(vocab_size).to(device)
+xb, yb = get_batch('train')
+
+model = BigramLanguageModel(vocab_size)
+m = model.to(device)
+
 out = m(xb, yb)
 
 idx = torch.zeros((1, 1), dtype=torch.long, device=device) # starting context (just a single newline)
