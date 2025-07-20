@@ -84,6 +84,16 @@ class Head(nn.Module):
         # perform the weighted aggregation of the values
         v = self.value(x) # (B, T, C)
         out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
+        return out
+
+class MultiHeadAttention(nn.Module):
+    # multiple heads of self-attention in parallel
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)]) # create multiple heads
+        
+    def forward(self, x):
+        return torch.cat([h(x) for h in self.heads], dim=-1) # concatenate the output of all heads
 
 
 '''Bigram Language Model'''
@@ -94,6 +104,7 @@ class BigramLanguageModel(nn.Module):
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd) # vocab_size x vocab_size
         self.position_embedding_table = nn.Embedding(block_size, n_embd) # block_size x vocab_size
+        self.sa_heads = MultiHeadAttention(num_heads = 4, head_size = n_embd // 4) # 4 heads, each of size n_embd/4 (8-dimensional self-attention)
         self.lm_head = nn.Linear(n_embd, vocab_size)
     
     def forward(self, idx, targets=None):
@@ -103,6 +114,7 @@ class BigramLanguageModel(nn.Module):
         tok_emb = self.token_embedding_table(idx) # (B,T,C) where C is an embed C | represent each token with a vector
         pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C) | represent each position with a vector
         x = tok_emb + pos_emb # (B,T,C)
+        x = self.sa_heads(x) # appply one head of self-attention. (B,T,C)
         logits = self.lm_head(x) # (B,T,vocab_size) 
         
         if targets is None:
