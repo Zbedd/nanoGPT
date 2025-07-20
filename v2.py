@@ -117,7 +117,27 @@ class FeedForward(nn.Module):
         
     def forward(self, x):
         return self.net(x)
+
+# ''' LayerNorm '''
+# class BatchNorm1d:
     
+#     def  __init__(self, dim, eps = 1e-5):
+#         self.eps = eps
+#         # parameters (trained with backpropagation)
+#         self.gamma = torch.ones(dim, device=device)
+#         self.beta = torch.zeros(dim, device=device)
+    
+#     def __call__(self, x):
+#         # calculate the forward pass
+#         xmean = x.mean(1, keepim=True) # batch mean
+#         xvar = x.var(1, keepim=True) # batch variance
+#         xhat = (x - xmean) / torch.sqrt(xvar + self.eps) # normalize to unit variance
+#         self.out = self.gamma * xhat + self.beta # scale and shift
+#         return self.out
+    
+#     def parameters(self):
+#         return [self.gamma, self.beta]
+
 ''' Transformer Block '''
 
 class Block(nn.Module):
@@ -128,10 +148,12 @@ class Block(nn.Module):
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size)
         self.ffwd = FeedForward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
         
     def forward(self, x):
-        x = x + self.sa(x)
-        x = x + self.ffwd(x)
+        x = x + self.sa(self.ln1(x)) # pre-norm (departing from post-norm in the original paper)
+        x = x + self.ffwd(self.ln2(x)) # pre-norm
         return x
     
 ''' Bigram Language Model '''
@@ -146,6 +168,7 @@ class BigramLanguageModel(nn.Module):
             Block(n_embd, n_head=4),
             Block(n_embd, n_head=4),
             Block(n_embd, n_head=4),
+            nn.LayerNorm(n_embd), # final layer norm
         )
         self.lm_head = nn.Linear(n_embd, vocab_size)
     
