@@ -5,13 +5,16 @@ from torch.nn import functional as F
 
 # hyperparametrs
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-batch_size = 32 # ind sequences processed in parallel
-block_size = 8 # max context length for predictions
-max_iters = 5000
-eval_interval = 500
-learning_rate = 1e-3
-eval_iters = 200
-n_embd = 32 # embedding dimension
+batch_size = 65 # ind sequences processed in parallel
+block_size = 256 # max context length for predictions
+max_iters = 5000 # number of training iterations
+eval_interval = 500 # how often to evaluate the loss
+learning_rate = 3e-4 # rate at which we update our model
+eval_iters = 200 # number of batches to eval loss over
+n_embd = 384 # embedding dimension
+n_head = 6 # number of attention heads (384/6 = 64 dim per head)
+n_layer = 6 # number of transformer blocks
+dropout = 0.2 # dropout rate
 # --------------------------------
 
 torch.manual_seed(1337)
@@ -73,6 +76,8 @@ class Head(nn.Module):
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+        self.dropout = nn.Dropout(dropout) # regularization
     
     def forward(self, x):
         B, T, C = x.shape
@@ -82,6 +87,7 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2, -1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
         wei = F.softmax(wei, dim=-1) # (B, T, T)
+        wei = self.dropout(wei) # regularization
         # perform the weighted aggregation of the values
         v = self.value(x) # (B, T, C)
         out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
@@ -93,10 +99,11 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)]) # create multiple heads
         self.proj = nn.Linear(n_embd, n_embd) # output projection
+        self.dropout = nn.Dropout(dropout) # regularization
         
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=-1) # concatenate the output of all heads
-        out = self.proj(out)
+        out = self.dropout(self.proj(out))
         return out
 
 ''' Feed Forward '''
@@ -112,7 +119,8 @@ class FeedForward(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(n_embd, 4 * n_embd), # dimension expands 4x
             nn.ReLU(),
-            nn.Linear(4* n_embd, n_embd) # dimension reduces back to n_embd
+            nn.Linear(4* n_embd, n_embd), # dimension reduces back to n_embd
+            nn.Dropout(dropout), # regularization
         )
         
     def forward(self, x):
@@ -164,12 +172,8 @@ class BigramLanguageModel(nn.Module):
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd) # vocab_size x vocab_size
         self.position_embedding_table = nn.Embedding(block_size, n_embd) # block_size x vocab_size
-        self.blocks = nn.Sequential(
-            Block(n_embd, n_head=4),
-            Block(n_embd, n_head=4),
-            Block(n_embd, n_head=4),
-            nn.LayerNorm(n_embd), # final layer norm
-        )
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_embd), # final layer norm
         self.lm_head = nn.Linear(n_embd, vocab_size)
     
     def forward(self, idx, targets=None):
