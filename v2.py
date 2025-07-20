@@ -62,7 +62,8 @@ def estimate_loss():
     model.train() # sets the model back to train mode
     return out
 
-'''Attention'''
+''' Attention '''
+
 class Head(nn.Module):
     # one head of self-attention
     
@@ -95,7 +96,8 @@ class MultiHeadAttention(nn.Module):
     def forward(self, x):
         return torch.cat([h(x) for h in self.heads], dim=-1) # concatenate the output of all heads
 
-'''Feed Forward'''
+''' Feed Forward '''
+
 class FeedForward(nn.Module):
     # a simple linear layer followed by a non-linearity
     # works by applying linear on a per-token level
@@ -111,8 +113,24 @@ class FeedForward(nn.Module):
         
     def forward(self, x):
         return self.net(x)
+    
+''' Transformer Block '''
 
-'''Bigram Language Model'''
+class Block(nn.Module):
+    # Transformer block: communication followed by computation
+    
+    def __init__(self, n_embd, n_head):
+        super().__init__()
+        head_size = n_embd // n_head
+        self.sa = MultiHeadAttention(n_head, head_size)
+        self.ffwd = FeedForward(n_embd)
+        
+    def forward(self, x):
+        x = self.sa(x)
+        x = self.ffwd(x)
+        return x
+    
+''' Bigram Language Model '''
    
 class BigramLanguageModel(nn.Module):
     def __init__(self, vocab_size):
@@ -120,8 +138,11 @@ class BigramLanguageModel(nn.Module):
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd) # vocab_size x vocab_size
         self.position_embedding_table = nn.Embedding(block_size, n_embd) # block_size x vocab_size
-        self.sa_heads = MultiHeadAttention(num_heads = 4, head_size = n_embd // 4) # 4 heads, each of size n_embd/4 (8-dimensional self-attention)
-        self.ffwd = FeedForward(n_embd) # feed forward layer
+        self.blocks = nn.Sequential(
+            Block(n_embd, n_head=4),
+            Block(n_embd, n_head=4),
+            Block(n_embd, n_head=4),
+        )
         self.lm_head = nn.Linear(n_embd, vocab_size)
     
     def forward(self, idx, targets=None):
@@ -131,8 +152,7 @@ class BigramLanguageModel(nn.Module):
         tok_emb = self.token_embedding_table(idx) # (B,T,C) where C is an embed C | represent each token with a vector
         pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C) | represent each position with a vector
         x = tok_emb + pos_emb # (B,T,C)
-        x = self.sa_heads(x) # apply one head of self-attention. (B,T,C)
-        x = self.ffwd(x) # apply feed forward layer (B,T,C)
+        x = self.blocks(x) # (B,T,C) | pass through the transformer blocks
         logits = self.lm_head(x) # (B,T,vocab_size) 
         
         if targets is None:
@@ -164,6 +184,9 @@ class BigramLanguageModel(nn.Module):
             # append sampled index to the running sequence
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
+    
+
+''' Main '''
     
 xb, yb = get_batch('train')
 
